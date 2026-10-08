@@ -3,6 +3,8 @@ package main
 import (
 	"log"
 	"net/http"
+
+	"bookly/services/auth/internal/handler"
 )
 
 func main() {
