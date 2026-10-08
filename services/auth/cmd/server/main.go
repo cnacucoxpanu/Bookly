@@ -1,3 +1,4 @@
+
 package main
 
 import (
@@ -8,12 +9,10 @@ import (
 )
 
 func main() {
-	mux := http.NewServeMux()
+	healthHandler := handler.NewHealthHandler()
 
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
-	})
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", healthHandler.Check)
 
 	server := &http.Server{
 		Addr:    ":8081",
