@@ -8,7 +8,6 @@ import (
 	"bookly/services/auth/internal/model"
 	"bookly/services/auth/internal/repository"
 
-	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -84,7 +83,7 @@ func (s *AuthService) Login(
 
 	user, err := s.users.GetByEmail(ctx, email)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, repository.ErrUserNotFound) {
 			return nil, "", ErrInvalidCredentials
 		}
 

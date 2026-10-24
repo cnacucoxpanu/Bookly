@@ -7,11 +7,15 @@ import (
 
 	"bookly/services/auth/internal/model"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var ErrEmailExists = errors.New("email already exists")
+var (
+	ErrEmailExists  = errors.New("email already exists")
+	ErrUserNotFound = errors.New("user not found")
+)
 
 type UserRepository struct {
 	db *pgxpool.Pool
@@ -67,6 +71,9 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*model.U
 	)
 
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
 		return nil, fmt.Errorf("get user by email: %w", err)
 	}
 	return user, err
