@@ -47,3 +47,27 @@ func (r *UserRepository) Create(ctx context.Context, user *model.User) error {
 	}
 	return nil
 }
+
+func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*model.User, error) {
+	query := `
+	SELECT id, email, password_hash, name, role, created_at
+	FROM users
+	WHERE email = $1
+	`
+
+	user := &model.User{}
+
+	err := r.db.QueryRow(ctx, query, email).Scan(
+		&user.ID,
+		&user.Email,
+		&user.PasswordHash,
+		&user.Name,
+		&user.Role,
+		&user.CreatedAt,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("get user by email: %w", err)
+	}
+	return user, err
+}

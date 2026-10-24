@@ -39,6 +39,10 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		req.Name,
 	)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidInput) {
+			http.Error(w, "Email or password is invalid", http.StatusBadRequest)
+			return
+		}
 		if errors.Is(err, service.ErrEmailExists) {
 			http.Error(w, "Email already exists", http.StatusConflict)
 			return
