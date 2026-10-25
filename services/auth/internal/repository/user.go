@@ -76,5 +76,31 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*model.U
 		}
 		return nil, fmt.Errorf("get user by email: %w", err)
 	}
-	return user, err
+	return user, nil
+}
+
+func (r *UserRepository) GetByID(ctx context.Context, id int64) (*model.User, error) {
+	query := `
+	SELECT id, email, password_hash, name, role, created_at
+	FROM users
+	WHERE id = $1
+	`
+
+	user := &model.User{}
+
+	err := r.db.QueryRow(ctx, query, id).Scan(
+		&user.ID,
+		&user.Email,
+		&user.PasswordHash,
+		&user.Name,
+		&user.Role,
+		&user.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
+		return nil, fmt.Errorf("get user by id: %w", err)
+	}
+	return user, nil
 }
