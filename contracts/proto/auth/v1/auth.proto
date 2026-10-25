@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package auth.v1;
+
+option go_package = "bookly/contracts/gen/auth/v1;authv1";
+
+// AuthService is used by the other services to check who is calling them.
+service AuthService {
+  // ValidateToken checks a JWT access token and returns the user it belongs to.
+  rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
+  // GetUser returns public profile data of a user.
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+}
+
+message ValidateTokenRequest {
+  string token = 1;
+}
+
+message ValidateTokenResponse {
+  int64 user_id = 1;
+  string role = 2;
+}
+
+message GetUserRequest {
+  int64 user_id = 1;
+}
+
+message GetUserResponse {
+  int64 user_id = 1;
+  string email = 2;
+  string name = 3;
+  string role = 4;
+}
