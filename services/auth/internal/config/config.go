@@ -11,6 +11,7 @@ import (
 
 type Config struct {
 	HTTPAddr    string
+	GRPCAddr    string
 	DatabaseURL string
 	JWTSecret   string
 	TokenTTL    time.Duration
@@ -23,6 +24,7 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		HTTPAddr:    getEnv("HTTP_ADDR", ":8081"),
+		GRPCAddr:    getEnv("GRPC_ADDR", ":9091"),
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		JWTSecret:   os.Getenv("JWT_SECRET"),
 	}

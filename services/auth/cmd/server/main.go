@@ -4,19 +4,24 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	authv1 "bookly/contracts/gen/auth/v1"
 	"bookly/services/auth/internal/config"
 	"bookly/services/auth/internal/database"
+	"bookly/services/auth/internal/grpcserver"
 	"bookly/services/auth/internal/handler"
 	"bookly/services/auth/internal/middleware"
 	"bookly/services/auth/internal/repository"
 	"bookly/services/auth/internal/service"
 	"bookly/services/auth/migrations"
+
+	"google.golang.org/grpc"
 )
 
 func main() {
@@ -69,10 +74,24 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	serverErr := make(chan error, 1)
+	grpcListener, err := net.Listen("tcp", cfg.GRPCAddr)
+	if err != nil {
+		return err
+	}
+
+	grpcServer := grpc.NewServer()
+	authv1.RegisterAuthServiceServer(grpcServer, grpcserver.New(authService))
+
+	serverErr := make(chan error, 2)
 	go func() {
-		log.Printf("Auth Service started on %s", cfg.HTTPAddr)
+		log.Printf("Auth HTTP server started on %s", cfg.HTTPAddr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+	go func() {
+		log.Printf("Auth gRPC server started on %s", cfg.GRPCAddr)
+		if err := grpcServer.Serve(grpcListener); err != nil {
 			serverErr <- err
 		}
 	}()
@@ -86,6 +105,8 @@ func run() error {
 
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
+
+	grpcServer.GracefulStop()
 
 	return server.Shutdown(shutdownCtx)
 }
