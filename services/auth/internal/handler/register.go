@@ -57,7 +57,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"message": "Registration request recieved",
+		"message": "Registration request received",
 		"email":   req.Email,
 		"name":    req.Name,
 	})
