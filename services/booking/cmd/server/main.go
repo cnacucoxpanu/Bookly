@@ -10,11 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"bookly/contracts/events"
 	"bookly/services/booking/internal/authclient"
 	"bookly/services/booking/internal/config"
 	"bookly/services/booking/internal/database"
 	"bookly/services/booking/internal/handler"
+	"bookly/services/booking/internal/messaging"
 	"bookly/services/booking/internal/middleware"
 	"bookly/services/booking/internal/repository"
 	"bookly/services/booking/internal/service"
@@ -58,10 +58,17 @@ func run() error {
 
 	spaceService := service.NewSpaceService(repository.NewSpaceRepository(db))
 	spaceHandler := handler.NewSpaceHandler(spaceService)
+	publisher, err := messaging.NewPublisher(ctx, cfg.RabbitMQURL)
+	if err != nil {
+		return err
+	}
+	defer publisher.Close()
+	log.Println("Connected to RabbitMQ")
+
 	bookingService := service.NewBookingService(
 		repository.NewBookingRepository(db),
 		repository.NewSpaceRepository(db),
-		nopPublisher{},
+		publisher,
 	)
 	bookingHandler := handler.NewBookingHandler(bookingService)
 	requireAuth := middleware.Auth(authClient)
@@ -104,11 +111,4 @@ func run() error {
 	defer cancelShutdown()
 
 	return server.Shutdown(shutdownCtx)
-}
-
-// nopPublisher drops events until the message broker is wired in.
-type nopPublisher struct{}
-
-func (nopPublisher) Publish(context.Context, string, events.BookingEvent) error {
-	return nil
 }
