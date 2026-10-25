@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"bookly/contracts/events"
 	"bookly/services/booking/internal/authclient"
 	"bookly/services/booking/internal/config"
 	"bookly/services/booking/internal/database"
@@ -57,6 +58,12 @@ func run() error {
 
 	spaceService := service.NewSpaceService(repository.NewSpaceRepository(db))
 	spaceHandler := handler.NewSpaceHandler(spaceService)
+	bookingService := service.NewBookingService(
+		repository.NewBookingRepository(db),
+		repository.NewSpaceRepository(db),
+		nopPublisher{},
+	)
+	bookingHandler := handler.NewBookingHandler(bookingService)
 	requireAuth := middleware.Auth(authClient)
 
 	mux := http.NewServeMux()
@@ -67,6 +74,10 @@ func run() error {
 	mux.HandleFunc("GET /spaces", spaceHandler.List)
 	mux.HandleFunc("GET /spaces/{id}", spaceHandler.Get)
 	mux.Handle("POST /spaces", requireAuth(http.HandlerFunc(spaceHandler.Create)))
+	mux.Handle("POST /bookings", requireAuth(http.HandlerFunc(bookingHandler.Create)))
+	mux.Handle("GET /bookings", requireAuth(http.HandlerFunc(bookingHandler.ListMine)))
+	mux.Handle("GET /bookings/{id}", requireAuth(http.HandlerFunc(bookingHandler.Get)))
+	mux.Handle("DELETE /bookings/{id}", requireAuth(http.HandlerFunc(bookingHandler.Cancel)))
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -93,4 +104,11 @@ func run() error {
 	defer cancelShutdown()
 
 	return server.Shutdown(shutdownCtx)
+}
+
+// nopPublisher drops events until the message broker is wired in.
+type nopPublisher struct{}
+
+func (nopPublisher) Publish(context.Context, string, events.BookingEvent) error {
+	return nil
 }
