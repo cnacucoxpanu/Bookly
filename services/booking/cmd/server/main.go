@@ -10,8 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	"bookly/services/booking/internal/authclient"
 	"bookly/services/booking/internal/config"
 	"bookly/services/booking/internal/database"
+	"bookly/services/booking/internal/handler"
+	"bookly/services/booking/internal/middleware"
+	"bookly/services/booking/internal/repository"
+	"bookly/services/booking/internal/service"
 	"bookly/services/booking/migrations"
 )
 
@@ -44,11 +49,24 @@ func run() error {
 		return err
 	}
 
+	authClient, err := authclient.New(cfg.AuthGRPCAddr)
+	if err != nil {
+		return err
+	}
+	defer authClient.Close()
+
+	spaceService := service.NewSpaceService(repository.NewSpaceRepository(db))
+	spaceHandler := handler.NewSpaceHandler(spaceService)
+	requireAuth := middleware.Auth(authClient)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	mux.HandleFunc("GET /spaces", spaceHandler.List)
+	mux.HandleFunc("GET /spaces/{id}", spaceHandler.Get)
+	mux.Handle("POST /spaces", requireAuth(http.HandlerFunc(spaceHandler.Create)))
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
