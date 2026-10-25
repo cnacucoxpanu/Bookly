@@ -12,6 +12,7 @@ import (
 	"time"
 
 	authv1 "bookly/contracts/gen/auth/v1"
+	"bookly/services/auth/docs"
 	"bookly/services/auth/internal/config"
 	"bookly/services/auth/internal/database"
 	"bookly/services/auth/internal/grpcserver"
@@ -61,6 +62,7 @@ func run() error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler.Check)
+	docs.Register(mux)
 	mux.HandleFunc("POST /register", authHandler.Register)
 	mux.HandleFunc("POST /login", authHandler.Login)
 	mux.Handle(
