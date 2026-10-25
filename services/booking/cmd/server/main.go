@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"bookly/services/booking/docs"
 	"bookly/services/booking/internal/authclient"
 	"bookly/services/booking/internal/config"
 	"bookly/services/booking/internal/database"
@@ -79,6 +80,7 @@ func run() error {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 	mux.HandleFunc("GET /spaces", spaceHandler.List)
+	docs.Register(mux)
 	mux.HandleFunc("GET /spaces/{id}", spaceHandler.Get)
 	mux.Handle("POST /spaces", requireAuth(http.HandlerFunc(spaceHandler.Create)))
 	mux.Handle("POST /bookings", requireAuth(http.HandlerFunc(bookingHandler.Create)))
