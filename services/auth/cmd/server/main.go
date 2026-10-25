@@ -6,52 +6,51 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
+	"bookly/services/auth/internal/config"
 	"bookly/services/auth/internal/database"
 	"bookly/services/auth/internal/handler"
 	"bookly/services/auth/internal/middleware"
 	"bookly/services/auth/internal/repository"
 	"bookly/services/auth/internal/service"
-
-	"github.com/joho/godotenv"
+	"bookly/services/auth/migrations"
 )
 
 func main() {
-	if err := godotenv.Overload("../../.env"); err != nil {
-		log.Fatalf("Failed to load .env: %v", err)
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
 	}
 
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		log.Fatal("DATABASE_URL is not set")
-	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if len(jwtSecret) < 32 {
-		log.Fatal("JWT_SECRET must contain at least 32 characters")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	db, err := database.Connect(ctx, databaseURL)
+	db, err := database.Connect(connectCtx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("Failed to connect database: %v", err)
+		return err
 	}
 	defer db.Close()
-
 	log.Println("Connected to PostgreSQL")
 
+	if err := database.Migrate(cfg.DatabaseURL, migrations.FS); err != nil {
+		return err
+	}
+
 	userRepository := repository.NewUserRepository(db)
-	tokenService := service.NewTokenService(
-		jwtSecret,
-		15*time.Minute,
-	)
-	authService := service.NewAuthService(
-		userRepository,
-		tokenService,
-	)
+	tokenService := service.NewTokenService(cfg.JWTSecret, cfg.TokenTTL)
+	authService := service.NewAuthService(userRepository, tokenService)
 	authHandler := handler.NewAuthHandler(authService)
 	healthHandler := handler.NewHealthHandler()
 
@@ -59,22 +58,34 @@ func main() {
 	mux.HandleFunc("GET /health", healthHandler.Check)
 	mux.HandleFunc("POST /register", authHandler.Register)
 	mux.HandleFunc("POST /login", authHandler.Login)
-
 	mux.Handle(
 		"GET /me",
 		middleware.Auth(tokenService)(http.HandlerFunc(authHandler.Me)),
 	)
 
 	server := &http.Server{
-		Addr:              ":8081",
+		Addr:              cfg.HTTPAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Println("Auth Service started on :8081")
+	serverErr := make(chan error, 1)
+	go func() {
+		log.Printf("Auth Service started on %s", cfg.HTTPAddr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
 
-	if err := server.ListenAndServe(); err != nil &&
-		!errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("HTTP server error: %v", err)
+	select {
+	case err := <-serverErr:
+		return err
+	case <-ctx.Done():
+		log.Println("Shutting down")
 	}
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+
+	return server.Shutdown(shutdownCtx)
 }
