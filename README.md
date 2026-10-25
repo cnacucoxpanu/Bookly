@@ -1,156 +1,84 @@
 # Bookly
 
-Coworking space booking platform built as three Go microservices.
+A small coworking space booking backend I wrote in Go to practice microservices.
+You can register, look at the available spaces, book one for a time slot and cancel the booking.
 
-- **Auth** – registration, login, JWT access tokens, user lookup for other services.
-- **Booking** – coworking spaces and bookings. Protects against double booking under concurrent requests.
-- **Notification** – listens to booking events and keeps a log of notifications.
+It is split into three services:
 
-## Architecture
+- **auth** – registration, login (JWT, bcrypt) and a gRPC API the other services use to check tokens
+- **booking** – spaces and bookings, REST API
+- **notification** – listens to booking events from RabbitMQ and saves a notification log
 
-```
-                  REST                         REST
-   client ───────────────▶  Auth        client ───────────────▶  Booking
-                             │                                    │   │
-                             │ PostgreSQL (auth)                  │   │ PostgreSQL (booking)
-                             │                                    │   │
-                             │◀──── gRPC: ValidateToken ──────────┘   │
-                             │                                        │ publish
-                             │                                        ▼
-                             │                                   RabbitMQ
-                             │◀──── gRPC: GetUser ─┐          (topic exchange
-                             │                     │           bookly.events)
-                                                Notification ◀────────┘
-                                                   │ consume booking.*
-                                                   ▼
-                                           PostgreSQL (notification)
-```
+Each service has its own PostgreSQL database and is split into handler / service / repository layers.
 
-- Every service has its own database and its own Clean Architecture layers:
-  `handler → service → repository`. The service layer knows nothing about HTTP or Postgres.
-- Booking checks tokens by calling Auth over **gRPC**, so it never needs the JWT secret.
-- Booking publishes `booking.created` and `booking.cancelled` events to **RabbitMQ**
-  (persistent messages, publisher confirms). Notification consumes them from a durable queue
-  and handles each event idempotently, because RabbitMQ delivers at least once.
-- A failing broker never breaks a booking: the event is logged and the booking stays saved.
+## How the services talk to each other
 
-## Stack
+- The client talks to auth and booking over REST.
+- Booking doesn't know the JWT secret. For every protected request it asks auth over gRPC
+  whether the token is valid.
+- When a booking is created or cancelled, booking sends an event to RabbitMQ.
+  Notification reads it, asks auth for the user's name and email over gRPC and writes a line to its database.
+- If RabbitMQ is down the booking still goes through, the failed event is only logged.
+  (A proper fix would be an outbox table, I didn't do it.)
 
-Go, PostgreSQL (pgx), gRPC / Protocol Buffers, RabbitMQ, JWT + bcrypt,
-OpenAPI / Swagger UI, Docker and Docker Compose, golang-migrate.
+## Running it
 
-## Running
-
-Requirements: Docker with Compose.
-
-Create a `.env` file in the project root:
+You need Docker. Create a `.env` file in the root folder:
 
 ```
-POSTGRES_PASSWORD=choose_a_password
-JWT_SECRET=a_random_string_of_at_least_32_characters
-
-# optional, these are the defaults
-POSTGRES_USER=bookly
-POSTGRES_DB=bookly
-POSTGRES_PORT=5432
-RABBITMQ_USER=bookly
-RABBITMQ_PASSWORD=bookly
+POSTGRES_PASSWORD=some_password
+JWT_SECRET=any_random_string_at_least_32_characters_long
 ```
 
-Avoid special characters in passwords, they end up inside connection URLs.
-
-Then start everything:
+Then:
 
 ```
 docker compose up -d --build
 ```
 
-| Service      | URL                                  |
-|--------------|--------------------------------------|
-| Auth         | http://localhost:8081                |
-| Booking      | http://localhost:8082                |
-| RabbitMQ UI  | http://localhost:15672               |
-| Swagger UI   | `/swagger/` on the Auth and Booking ports |
+Auth is on http://localhost:8081, booking on http://localhost:8082.
+Swagger UI is at `/swagger/` on both ports, RabbitMQ management is on http://localhost:15672
+(user and password `bookly`). Tables are created automatically on startup and booking
+comes with a few spaces already added.
 
-Migrations are applied by each service on startup. Booking comes with a few seeded spaces.
-
-## Try it
+Quick try:
 
 ```
-# register and log in
 curl -X POST localhost:8081/register -H "Content-Type: application/json" \
   -d '{"email":"anna@example.com","password":"password123","name":"Anna"}'
 
 curl -X POST localhost:8081/login -H "Content-Type: application/json" \
   -d '{"email":"anna@example.com","password":"password123"}'
-# -> {"access_token":"<token>", ...}
 
-# look at the spaces and book one
 curl localhost:8082/spaces
 
 curl -X POST localhost:8082/bookings \
-  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <access_token from login>" -H "Content-Type: application/json" \
   -d '{"space_id":1,"start_time":"2030-01-15T10:00:00Z","end_time":"2030-01-15T12:00:00Z"}'
 ```
 
-The same request again returns `409 Conflict`. Watch the notification service log to see the
-event arrive:
+Send the last request twice and the second one gets `409`.
+`docker compose logs -f notification` shows the notification for the first one.
 
-```
-docker compose logs -f notification
-```
+Only admins can create new spaces. There is no endpoint for making someone an admin,
+so I change the role in the database by hand (`UPDATE users SET role = 'admin' ...`
+in the `auth` database) and log in again, because the role is stored in the token.
 
-Creating spaces is allowed for admins only. There is no endpoint to promote a user, so change
-the role in the database and log in again (the role is stored in the token):
+## Double booking
 
-```
-docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d auth'
-```
+The part I spent the most time on. Two people booking the same slot at the same moment
+must not both succeed, so there are two protections:
 
-```sql
-UPDATE users SET role = 'admin' WHERE email = 'anna@example.com';
-```
+1. The check for overlapping bookings and the insert happen in one transaction with
+   `SERIALIZABLE` isolation. If two transactions collide, Postgres aborts one of them,
+   the code retries it and the second try already sees the other booking and returns `409`.
+2. The `bookings` table has an exclusion constraint on (space, time range), so the database
+   itself refuses overlapping active bookings even if the Go code has a bug.
 
-## API overview
-
-Auth (`:8081`)
-
-| Method | Path        | Description                         |
-|--------|-------------|-------------------------------------|
-| POST   | `/register` | create a user                       |
-| POST   | `/login`    | get an access token                 |
-| GET    | `/me`       | user id and role from the token     |
-
-Booking (`:8082`)
-
-| Method | Path             | Description                              |
-|--------|------------------|------------------------------------------|
-| GET    | `/spaces`        | list spaces                              |
-| GET    | `/spaces/{id}`   | get a space                              |
-| POST   | `/spaces`        | create a space (admin)                   |
-| POST   | `/bookings`      | book a space                             |
-| GET    | `/bookings`      | my bookings                              |
-| GET    | `/bookings/{id}` | get a booking (owner or admin)           |
-| DELETE | `/bookings/{id}` | cancel a booking (owner or admin)        |
-
-Full descriptions are in `services/*/docs/openapi.yaml` and in Swagger UI.
-
-## How double booking is prevented
-
-Two requests for the same slot at the same moment must never both succeed. Booking uses two layers:
-
-1. **Transaction with `SERIALIZABLE` isolation.** The repository checks for overlapping active
-   bookings and inserts the new one in a single transaction. If two transactions race,
-   Postgres aborts one with a serialization failure (`40001`). The repository retries it, and
-   the second attempt sees the winner's booking and answers `409`.
-2. **Exclusion constraint in the schema.**
-   `EXCLUDE USING gist (space_id WITH =, tstzrange(start_time, end_time) WITH &&) WHERE (status = 'active')`
-   makes overlapping active bookings impossible even if the application code is bypassed.
-   Back-to-back bookings (one ends when the next starts) are allowed, cancelled bookings free the slot.
+There are tests that send 20–30 parallel requests for the same slot and check that exactly
+one of them wins. They need a real Postgres, see below.
 
 ## Tests
-
-Unit tests (no external dependencies):
 
 ```
 cd services/auth && go test ./...
@@ -158,37 +86,29 @@ cd services/booking && go test ./...
 cd services/notification && go test ./...
 ```
 
-Concurrency tests for Booking need a real PostgreSQL with the `booking` database, for example
-the one from Docker Compose:
+The tests in `services/booking/internal/repository` are skipped unless you point them
+to a database:
 
 ```
-TEST_DATABASE_URL=postgres://bookly:<password>@localhost:5432/booking \
-  go test ./internal/repository/ -v
+TEST_DATABASE_URL=postgres://bookly:<password>@localhost:5432/booking go test ./internal/repository/
 ```
 
-They fire many parallel requests at the same slot and check that exactly one wins and that no
-two active bookings ever overlap.
+(for example the one from docker compose, the `booking` database is created there automatically)
 
-## Project layout
-
-```
-contracts/              shared module: .proto files, generated gRPC code, event format
-deploy/postgres/        creates a database per service on first start
-services/auth/          cmd/server, internal/{handler,service,repository,grpcserver,...}, migrations, docs
-services/booking/       same layout, plus internal/{authclient,messaging}
-services/notification/  same layout, plus internal/consumer
-docker-compose.yml
-```
-
-Regenerating the gRPC code after editing a `.proto` file needs `protoc`, `protoc-gen-go` and
-`protoc-gen-go-grpc`:
+## Folders
 
 ```
-sh contracts/generate.sh
+contracts/   .proto file, generated gRPC code, the event struct shared by booking and notification
+deploy/      script that creates a database for every service
+services/    auth, booking, notification
 ```
 
-## Possible improvements
+If you change `contracts/proto/auth/v1/auth.proto`, run `sh contracts/generate.sh`
+(needs `protoc`, `protoc-gen-go` and `protoc-gen-go-grpc`).
 
-- Transactional outbox for events, so a crash between the commit and the publish cannot lose one.
-- Refresh tokens and an endpoint to manage roles.
-- Dead-letter queue for messages that cannot be processed.
+## What could be better
+
+- outbox for the events
+- refresh tokens
+- a dead letter queue in RabbitMQ for messages that can't be processed
+- a way to manage roles without touching the database
