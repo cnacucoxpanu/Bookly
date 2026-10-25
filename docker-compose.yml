@@ -1,17 +1,86 @@
-
 services:
   postgres:
     image: postgres:18
-    container_name: bookly2-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-bookly}
+      POSTGRES_USER: ${POSTGRES_USER:-bookly}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     ports:
-      - "${POSTGRES_PORT}:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - bookly2_postgres_data:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql
+      - ./deploy/postgres/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-bookly}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-bookly}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  auth:
+    build:
+      context: .
+      dockerfile: services/auth/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-bookly}:${POSTGRES_PASSWORD}@postgres:5432/auth
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (at least 32 characters)}
+    ports:
+      - "${AUTH_HTTP_PORT:-8081}:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  booking:
+    build:
+      context: .
+      dockerfile: services/booking/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-bookly}:${POSTGRES_PASSWORD}@postgres:5432/booking
+      AUTH_GRPC_ADDR: auth:9091
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-bookly}:${RABBITMQ_PASSWORD:-bookly}@rabbitmq:5672/
+    ports:
+      - "${BOOKING_HTTP_PORT:-8082}:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      auth:
+        condition: service_started
+
+  notification:
+    build:
+      context: .
+      dockerfile: services/notification/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-bookly}:${POSTGRES_PASSWORD}@postgres:5432/notification
+      AUTH_GRPC_ADDR: auth:9091
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-bookly}:${RABBITMQ_PASSWORD:-bookly}@rabbitmq:5672/
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      auth:
+        condition: service_started
 
 volumes:
-  bookly2_postgres_data:
+  postgres_data:
